@@ -10,8 +10,9 @@ on:
   # Uncomment to auto-run every 5h50m so the stream keeps reconnecting to the
   # same YouTube key past GitHub's 6-hour job limit. There will be a short
   # gap (a minute or two) between runs while ffmpeg restarts.
-  # schedule:
-  #   - cron: '*/350 * * * *'
+  
+  schedule:
+  - cron: '0 */6 * * *'
 
 jobs:
   stream:
