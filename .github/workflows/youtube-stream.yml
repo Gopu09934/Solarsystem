@@ -1,0 +1,56 @@
+name: Stream Solar System to YouTube
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'How long to stream, in minutes (GitHub job limit is 6h / 360min)'
+        required: false
+        default: '60'
+  # Uncomment to auto-run every 5h50m so the stream keeps reconnecting to the
+  # same YouTube key past GitHub's 6-hour job limit. There will be a short
+  # gap (a minute or two) between runs while ffmpeg restarts.
+  # schedule:
+  #   - cron: '*/350 * * * *'
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies (ffmpeg + canvas build libs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Start YouTube live stream (auto-retries on crash)
+        env:
+          YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+          STREAM_DURATION_MINUTES: ${{ github.event.inputs.duration_minutes }}
+        run: |
+          set +e
+          MAX_ATTEMPTS=5
+          ATTEMPT=1
+          until [ $ATTEMPT -gt $MAX_ATTEMPTS ]; do
+            echo "=== Stream attempt $ATTEMPT of $MAX_ATTEMPTS ==="
+            node stream.js
+            CODE=$?
+            if [ $CODE -eq 0 ]; then
+              echo "Stream ended normally."
+              break
+            fi
+            echo "stream.js exited with code $CODE — retrying in 10s..."
+            ATTEMPT=$((ATTEMPT+1))
+            sleep 10
+          done

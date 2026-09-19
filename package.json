@@ -1,0 +1,13 @@
+{
+  "name": "solar-system-youtube-stream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Renders an animated solar system with asteroid belt and streams it live to YouTube via ffmpeg + GitHub Actions",
+  "main": "stream.js",
+  "scripts": {
+    "start": "node stream.js"
+  },
+  "dependencies": {
+    "canvas": "^2.11.2"
+  }
+}
