@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Solar System</title>
+<style>
+  @font-face {
+    font-family: 'Barlow';
+    src: url('assets/fonts/Barlow-Regular.ttf') format('truetype');
+    font-weight: normal;
+  }
+  @font-face {
+    font-family: 'Barlow';
+    src: url('assets/fonts/Barlow-SemiBold.ttf') format('truetype');
+    font-weight: bold;
+  }
+  html, body { margin: 0; background: #03040c; overflow: hidden; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<script src="show-content.js"></script>
+<script src="solar-system-core.js"></script>
+<script>
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const { WIDTH, HEIGHT, createAsteroidBelt, createStarField, createNebulaBlobs, drawFrame, TEXTURE_FILES } = window.SolarSystemCore;
+  const asteroids = createAsteroidBelt(220);
+  const stars = createStarField(250, WIDTH, HEIGHT);
+  const nebula = createNebulaBlobs(4, WIDTH, HEIGHT);
+  // No chat bridge in the plain browser preview — the quiz/ticker still
+  // cycle on their own clock, just without live chat commands.
+  const engagement = { chatConnected: false };
+
+  function loadImageSafe(src) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null); // missing texture -> flat-color fallback
+      img.src = src;
+    });
+  }
+
+  async function loadTextures() {
+    const entries = Object.entries(TEXTURE_FILES);
+    const loaded = await Promise.all(entries.map(([, src]) => loadImageSafe(src)));
+    const images = {};
+    entries.forEach(([name], i) => { if (loaded[i]) images[name] = loaded[i]; });
+    return images;
+  }
+
+  let start;
+  function loop(now) {
+    const t = (now - start) / 1000;
+    drawFrame(ctx, WIDTH, HEIGHT, t, asteroids, stars, nebula, window.__textures, engagement);
+    requestAnimationFrame(loop);
+  }
+
+  // Wait for the bundled font to be ready so the first frames don't flash
+  // in a fallback system font before swapping to Barlow.
+  async function ready() {
+    try { await document.fonts.load('bold 14px Barlow'); await document.fonts.load('14px Barlow'); } catch (e) { /* fine, canvas falls back */ }
+    const images = await loadTextures();
+    window.__textures = images;
+    start = performance.now();
+    requestAnimationFrame(loop);
+  }
+  ready();
+</script>
+</body>
+</html>
