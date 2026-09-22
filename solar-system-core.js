@@ -439,14 +439,17 @@
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 34px "Barlow", sans-serif';
-    try { ctx.fillText('Live Solar System Simulation', width / 2, height / 2 - 18); } catch (e) { /* skip */ }
+    ctx.font = 'bold 30px "Barlow", sans-serif';
+    try { ctx.fillText('\u{1F30D} September Equinox 2026', width / 2, height / 2 - 20); } catch (e) { /* skip */ }
     ctx.font = '16px "Barlow", sans-serif';
     ctx.fillStyle = '#cbd5e1';
-    try { ctx.fillText('Sun \u00B7 Planets \u00B7 Moon \u00B7 Asteroid Belt \u00B7 Comets', width / 2, height / 2 + 14); } catch (e) { /* skip */ }
+    try { ctx.fillText('Earth Day & Night Tracker \u00B7 Solar System \u00B7 Aurora Watch', width / 2, height / 2 + 10); } catch (e) { /* skip */ }
     ctx.font = '14px "Barlow", sans-serif';
     ctx.fillStyle = '#9fb2c8';
-    try { ctx.fillText('Say hello in the chat \u2014 a quiz round starts every few minutes', width / 2, height / 2 + 40); } catch (e) { /* skip */ }
+    try { ctx.fillText(formatCountdown(EQUINOX_UTC_MS - Date.now()), width / 2, height / 2 + 36); } catch (e) { /* skip */ }
+    ctx.font = '13px "Barlow", sans-serif';
+    ctx.fillStyle = '#7c8ba0';
+    try { ctx.fillText('Say hello in the chat \u2014 a quiz round starts every few minutes', width / 2, height / 2 + 58); } catch (e) { /* skip */ }
     ctx.restore();
   }
 
@@ -640,7 +643,243 @@
     ctx.restore();
   }
 
-  function drawFrame(ctx, width, height, t, asteroids, stars, nebula, images, engagement) {
+  // --- Earth day/night tracker -------------------------------------------
+  // The September 2026 equinox, confirmed against multiple independent
+  // sources (EarthSky, Star Walk, timedate.org): 2026-09-23 00:06 UTC.
+  const EQUINOX_UTC_MS = Date.UTC(2026, 8, 23, 0, 6, 0);
+
+  const TRACKER_CITIES = [
+    { name: 'New York', lat: 40.71, lon: -74.01, tz: 'America/New_York' },
+    { name: 'London', lat: 51.51, lon: -0.13, tz: 'Europe/London' },
+    { name: 'Cairo', lat: 30.04, lon: 31.24, tz: 'Africa/Cairo' },
+    { name: 'Tokyo', lat: 35.68, lon: 139.69, tz: 'Asia/Tokyo' },
+    { name: 'Sydney', lat: -33.87, lon: 151.21, tz: 'Australia/Sydney' },
+  ];
+
+  // Standard NOAA solar-position approximation (fractional-year / equation
+  // of time series). Good to a fraction of a degree — plenty for a visual
+  // day/night map, not meant for precision ephemeris work.
+  function solarPosition(date) {
+    const start = Date.UTC(date.getUTCFullYear(), 0, 1);
+    const dayOfYear = (date.getTime() - start) / 86400000;
+    const hourUTC = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+    const daysInYear = ((date.getUTCFullYear() % 4 === 0 && date.getUTCFullYear() % 100 !== 0) || date.getUTCFullYear() % 400 === 0) ? 366 : 365;
+    const gamma = (2 * Math.PI / daysInYear) * (dayOfYear - 1 + (hourUTC - 12) / 24);
+
+    const decl = 0.006918 - 0.399912 * Math.cos(gamma) + 0.070257 * Math.sin(gamma)
+      - 0.006758 * Math.cos(2 * gamma) + 0.000907 * Math.sin(2 * gamma)
+      - 0.002697 * Math.cos(3 * gamma) + 0.00148 * Math.sin(3 * gamma); // radians
+
+    const eqTimeMin = 229.18 * (0.000075 + 0.001868 * Math.cos(gamma) - 0.032077 * Math.sin(gamma)
+      - 0.014615 * Math.cos(2 * gamma) - 0.040849 * Math.sin(2 * gamma));
+
+    const subsolarLonDeg = -15 * (hourUTC - 12) - eqTimeMin / 4;
+    return { declRad: decl, subsolarLonDeg };
+  }
+
+  function isDaylight(latDeg, lonDeg, sun) {
+    const latRad = latDeg * Math.PI / 180;
+    const lonDiffRad = (lonDeg - sun.subsolarLonDeg) * Math.PI / 180;
+    const cosC = Math.sin(sun.declRad) * Math.sin(latRad) + Math.cos(sun.declRad) * Math.cos(latRad) * Math.cos(lonDiffRad);
+    return cosC;
+  }
+
+  function formatCountdown(ms) {
+    const past = ms < 0;
+    const abs = Math.abs(ms);
+    const totalMin = Math.floor(abs / 60000);
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    const m = totalMin % 60;
+    const parts = [];
+    if (d > 0) parts.push(`${d}d`);
+    parts.push(`${h}h`, `${m}m`);
+    return `${past ? 'Equinox was' : 'Equinox in'} ${parts.join(' ')} ${past ? 'ago' : ''}`.trim();
+  }
+
+  // A 240x120 equirectangular map (whole Earth, -180..180 / -90..90) painted
+  // pixel-by-pixel from the real subsolar point, so the terminator shown is
+  // the actual one for whatever moment the stream happens to be rendering,
+  // not a canned animation.
+  const TRACKER_MAP_W = 240;
+  const TRACKER_MAP_H = 120;
+  let trackerImageData = null;
+
+  function drawEarthTracker(ctx, width, height) {
+    const panelX = 16;
+    const panelY = 16;
+    const panelW = 292;
+    const mapX = panelX + 14;
+    const mapY = panelY + 46;
+    const panelH = 46 + TRACKER_MAP_H + 14;
+
+    const now = new Date();
+    const sun = solarPosition(now);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(8,10,22,0.72)';
+    ctx.beginPath();
+    if (ctx.roundRect) { ctx.roundRect(panelX, panelY, panelW, panelH, 10); } else { ctx.rect(panelX, panelY, panelW, panelH); }
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(140,190,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8cb8ff';
+    ctx.font = 'bold 12px "Barlow", sans-serif';
+    try { ctx.fillText('EARTH DAY / NIGHT TRACKER', panelX + 14, panelY + 20); } catch (e) { /* skip */ }
+
+    ctx.fillStyle = '#ffe38a';
+    ctx.font = '12px "Barlow", sans-serif';
+    try { ctx.fillText(formatCountdown(EQUINOX_UTC_MS - now.getTime()), panelX + 14, panelY + 37); } catch (e) { /* skip */ }
+
+    // Paint the day/night bitmap. Rebuilding ImageData each frame is cheap
+    // at this resolution (240x120 = 28,800 pixels).
+    if (!trackerImageData || trackerImageData.width !== TRACKER_MAP_W) {
+      trackerImageData = ctx.createImageData(TRACKER_MAP_W, TRACKER_MAP_H);
+    }
+    const buf = trackerImageData.data;
+    for (let py = 0; py < TRACKER_MAP_H; py++) {
+      const lat = 90 - (py / TRACKER_MAP_H) * 180;
+      for (let px = 0; px < TRACKER_MAP_W; px++) {
+        const lon = -180 + (px / TRACKER_MAP_W) * 360;
+        const cosC = isDaylight(lat, lon, sun);
+        const idx = (py * TRACKER_MAP_W + px) * 4;
+        if (cosC > 0.05) {
+          buf[idx] = 58; buf[idx + 1] = 92; buf[idx + 2] = 150; buf[idx + 3] = 255; // day
+        } else if (cosC > -0.05) {
+          buf[idx] = 130; buf[idx + 1] = 90; buf[idx + 2] = 60; buf[idx + 3] = 255; // twilight band
+        } else {
+          buf[idx] = 10; buf[idx + 1] = 13; buf[idx + 2] = 26; buf[idx + 3] = 255; // night
+        }
+      }
+    }
+    ctx.putImageData(trackerImageData, mapX, mapY);
+
+    // graticule
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mapX, mapY, TRACKER_MAP_W, TRACKER_MAP_H);
+    ctx.beginPath();
+    ctx.moveTo(mapX + TRACKER_MAP_W / 2, mapY);
+    ctx.lineTo(mapX + TRACKER_MAP_W / 2, mapY + TRACKER_MAP_H);
+    ctx.moveTo(mapX, mapY + TRACKER_MAP_H / 2);
+    ctx.lineTo(mapX + TRACKER_MAP_W, mapY + TRACKER_MAP_H / 2);
+    ctx.stroke();
+
+    // subsolar point marker
+    const subX = mapX + ((sun.subsolarLonDeg + 180) / 360) * TRACKER_MAP_W;
+    const subY = mapY + (90 - Math.asin(Math.sin(sun.declRad)) * 180 / Math.PI) / 180 * TRACKER_MAP_H;
+    ctx.fillStyle = '#ffe38a';
+    ctx.beginPath();
+    ctx.arc(subX, subY, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // cities — offset label direction/row by index so nearby cities (e.g.
+    // London/Cairo, only ~30° of longitude apart) don't collide on screen
+    const LABEL_OFFSETS = [
+      { dx: 6, dy: -5 },   // New York
+      { dx: 6, dy: -16 },  // London
+      { dx: 6, dy: 12 },   // Cairo
+      { dx: -6, dy: -5 },  // Tokyo
+      { dx: -6, dy: 12 },  // Sydney
+    ];
+    TRACKER_CITIES.forEach((city, idx) => {
+      const cx2 = mapX + ((city.lon + 180) / 360) * TRACKER_MAP_W;
+      const cy2 = mapY + ((90 - city.lat) / 180) * TRACKER_MAP_H;
+      const lit = isDaylight(city.lat, city.lon, sun) > 0;
+      ctx.fillStyle = lit ? '#ffe38a' : '#7ea6ff';
+      ctx.beginPath();
+      ctx.arc(cx2, cy2, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      let localTime = '--:--';
+      try {
+        localTime = new Intl.DateTimeFormat('en-GB', { timeZone: city.tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
+      } catch (e) { /* timezone db unavailable — leave placeholder */ }
+
+      ctx.font = '10px "Barlow", sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      const label = `${city.name} ${localTime}`;
+      const off = LABEL_OFFSETS[idx] || { dx: 6, dy: -5 };
+      ctx.textAlign = off.dx < 0 ? 'right' : 'left';
+      try { ctx.fillText(label, cx2 + off.dx, cy2 + off.dy); } catch (e) { /* skip */ }
+      ctx.textAlign = 'left';
+    });
+
+    ctx.restore();
+  }
+
+  // --- Aurora watch --------------------------------------------------------
+  // Reads whatever the caller last fetched from NOAA SWPC's free,
+  // key-less planetary K-index feed (see stream.js / index.html) — this
+  // function only draws it, never fetches, so it works the same in the
+  // browser preview and the Node streamer.
+  function kpGuidance(kp) {
+    if (kp < 3) return { label: 'Quiet', color: '#7ea6ff', note: 'Aurora only very close to the poles.' };
+    if (kp < 5) return { label: 'Unsettled', color: '#8effb0', note: 'Aurora possible at high latitudes.' };
+    if (kp < 6) return { label: 'Minor storm (G1)', color: '#ffe38a', note: 'Aurora may reach northern-tier states/UK.' };
+    if (kp < 7) return { label: 'Moderate storm (G2)', color: '#ffb066', note: 'Aurora visible further from the poles.' };
+    if (kp < 8) return { label: 'Strong storm (G3)', color: '#ff8a66', note: 'Aurora may reach mid-latitudes.' };
+    return { label: 'Severe-extreme storm (G4-G5)', color: '#ff6666', note: 'Aurora possibly visible far from the poles.' };
+  }
+
+  function drawAuroraWatch(ctx, width, height, spaceWeather) {
+    const panelW = 210;
+    const panelH = 92;
+    const x = width - panelW - 16;
+    const y = 54;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(8,10,22,0.72)';
+    ctx.beginPath();
+    if (ctx.roundRect) { ctx.roundRect(x, y, panelW, panelH, 10); } else { ctx.rect(x, y, panelW, panelH); }
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(140,255,170,0.3)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8effb0';
+    ctx.font = 'bold 12px "Barlow", sans-serif';
+    try { ctx.fillText('AURORA WATCH', x + 14, y + 20); } catch (e) { /* skip */ }
+
+    const sw = spaceWeather || {};
+    if (!sw.available || typeof sw.kp !== 'number') {
+      ctx.fillStyle = '#8a9bb0';
+      ctx.font = '12px "Barlow", sans-serif';
+      try { ctx.fillText('Data unavailable', x + 14, y + 42); } catch (e) { /* skip */ }
+      ctx.restore();
+      return;
+    }
+
+    const g = kpGuidance(sw.kp);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 22px "Barlow", sans-serif';
+    try { ctx.fillText(`Kp ${sw.kp.toFixed(1)}`, x + 14, y + 46); } catch (e) { /* skip */ }
+
+    // gauge, 0-9
+    const gaugeX = x + 14;
+    const gaugeY = y + 56;
+    const gaugeW = panelW - 28;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(gaugeX, gaugeY, gaugeW, 6);
+    ctx.fillStyle = g.color;
+    ctx.fillRect(gaugeX, gaugeY, gaugeW * Math.min(1, sw.kp / 9), 6);
+
+    ctx.fillStyle = g.color;
+    ctx.font = 'bold 11px "Barlow", sans-serif';
+    try { ctx.fillText(g.label, x + 14, y + 76); } catch (e) { /* skip */ }
+
+    ctx.fillStyle = '#8a9bb0';
+    ctx.font = '10px "Barlow", sans-serif';
+    try { ctx.fillText('Source: NOAA SWPC', x + 14, y + 88); } catch (e) { /* skip */ }
+
+    ctx.restore();
+  }
+
+  function drawFrame(ctx, width, height, t, asteroids, stars, nebula, images, engagement, spaceWeather) {
     const cx = width / 2;
     const cy = height / 2;
     const imgs = images || {};
@@ -791,6 +1030,8 @@
 
     // fixed overlay — stays sharp and readable regardless of drift/zoom
     drawLiveClock(ctx, width, height, t);
+    drawEarthTracker(ctx, width, height);
+    drawAuroraWatch(ctx, width, height, spaceWeather);
     // Quiz panel and spotlight card wait until the intro card has cleared,
     // so a viewer's first few seconds aren't three overlapping text blocks.
     if (t > INTRO_DURATION) {
